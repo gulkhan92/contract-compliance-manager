@@ -201,6 +201,13 @@ database level — a user from one organization can never see another's
 contracts, obligations, or files, enforced in code and covered by tests,
 not left to convention.
 
+### Key Architectural Principles
+
+- **Zero-Cost Funnel:** Ingested documents pass through deterministic regex filtering, local CPU embeddings (`bge-base-en-v1.5`), and `pgvector` deduplication before triggering any paid or rate-limited LLM API calls.
+- **Strict Multi-Tenant Isolation:** Every relational query and vector similarity lookup is strictly filtered by the authenticated user's `organization_id` at the database level.
+- **Quota-Aware Failover:** Dual LLM providers (Groq primary, Gemini fallback) with automated quota tracking and Pydantic v2 validation guarantee deterministic structured extractions.
+
+
 ## Results & Engineering Rigor
 
 Numbers that are true today, not projections:
