@@ -35,7 +35,14 @@ async def db_connection() -> AsyncGenerator[AsyncConnection]:
 
 @pytest.fixture
 async def db_session(db_connection: AsyncConnection) -> AsyncGenerator[AsyncSession]:
+    # expire_on_commit=False matches app.db.session.AsyncSessionLocal (the
+    # production session factory) — without it, an endpoint's internal
+    # db.commit() would expire every attribute on objects it then still
+    # needs to read (e.g. to build its response), and reading an expired
+    # attribute triggers an implicit sync lazy-load that async SQLAlchemy
+    # forbids (MissingGreenlet). This only ever showed up here, in tests;
+    # production was never affected.
     async with AsyncSession(
-        bind=db_connection, join_transaction_mode="create_savepoint"
+        bind=db_connection, join_transaction_mode="create_savepoint", expire_on_commit=False
     ) as session:
         yield session

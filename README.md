@@ -31,6 +31,14 @@ schema, security model, API surface, and phased build plan — lives in
   revocable via a `refresh_tokens` denylist table), `get_current_user` /
   `require_role(...)` FastAPI dependencies, rate limiting on auth endpoints,
   and audit-log entries on every state change.
+- **Phase 3 — Document Ingestion**: `POST /api/v1/contracts` (multipart
+  upload, magic-byte file-type validation, size cap, exact-duplicate
+  detection, files stored outside the web root under server-generated
+  UUIDs), PDF/DOCX parsing into paragraph-level `contract_chunks` with
+  best-effort section-heading detection, and the deterministic
+  regex/keyword pre-filter that flags obligation-candidate paragraphs
+  before anything reaches an embedding model or an LLM (Phase 4/5). Plus
+  list/get/status/delete endpoints, all org-scoped and role-gated.
 
 See the build plan's §12 for the remaining phases.
 

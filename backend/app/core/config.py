@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     jwt_access_token_expire_minutes: int = 15
     jwt_refresh_token_expire_days: int = 7
 
+    # --- Document storage (wired up in Phase 3) ---
+    storage_root: str = "storage"
+
     # --- LLM providers (wired up in Phase 5) ---
     groq_api_key: str | None = None
     gemini_api_key: str | None = None
