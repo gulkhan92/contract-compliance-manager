@@ -26,6 +26,11 @@ schema, security model, API surface, and phased build plan — lives in
   `pgvector` and creating HNSW cosine-similarity indexes), and a demo seed
   script that builds a realistic multi-status obligation calendar from the
   CUAD v1 dataset.
+- **Phase 2 — Auth & RBAC**: register/login/refresh/logout, bcrypt password
+  hashing, JWT access + refresh tokens (refresh tokens rotated on use and
+  revocable via a `refresh_tokens` denylist table), `get_current_user` /
+  `require_role(...)` FastAPI dependencies, rate limiting on auth endpoints,
+  and audit-log entries on every state change.
 
 See the build plan's §12 for the remaining phases.
 
@@ -50,7 +55,7 @@ python -m venv .venv
 ./.venv/Scripts/python -m uvicorn app.main:app --reload   # serves http://localhost:8000
 ./.venv/Scripts/python -m pytest                          # run tests
 ./.venv/Scripts/python -m ruff check .                    # lint
-./.venv/Scripts/python -m mypy app scripts                 # type-check
+./.venv/Scripts/python -m mypy app scripts tests            # type-check
 ```
 
 `requirements.txt` and `requirements-dev.txt` are fully pinned (`pip freeze`

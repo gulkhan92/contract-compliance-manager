@@ -51,7 +51,7 @@ jobs:
         run: ruff check .
 
       - name: Type-check (mypy)
-        run: mypy app scripts
+        run: mypy app scripts tests
 
       - name: Apply database migrations
         run: alembic upgrade head

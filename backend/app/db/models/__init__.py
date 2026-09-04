@@ -10,6 +10,7 @@ from app.db.models.extraction_job import ExtractionJob
 from app.db.models.llm_usage_log import LLMUsageLog
 from app.db.models.obligation import Obligation
 from app.db.models.organization import Organization
+from app.db.models.refresh_token import RefreshToken
 from app.db.models.user import User
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     "LLMUsageLog",
     "Obligation",
     "Organization",
+    "RefreshToken",
     "User",
 ]
