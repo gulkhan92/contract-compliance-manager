@@ -108,6 +108,38 @@ async def test_upload_creates_contract_with_chunks_and_prefilter_hits(
 
 
 @pytest.mark.asyncio
+async def test_upload_embeds_prefilter_survivors_only(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Phase 4: chunks that passed the regex pre-filter get a 768-dim
+    embedding; boilerplate/no-signal chunks are never embedded — there's
+    no point spending the (free, but not zero-cost) compute on text
+    nothing downstream will ever use."""
+    token = await _register_and_login(client, org_name="Acme", email="admin10@example.com")
+
+    response = await client.post(
+        "/api/v1/contracts",
+        headers=_auth_headers(token),
+        files={"file": ("renewal.pdf", _RENEWAL_CONTRACT_PDF, "application/pdf")},
+    )
+    assert response.status_code == 201, response.text
+    contract_id = response.json()["contract"]["id"]
+
+    chunks = (
+        await db_session.execute(
+            select(ContractChunk).where(ContractChunk.contract_id == contract_id)
+        )
+    ).scalars().all()
+
+    for chunk in chunks:
+        if chunk.passed_prefilter:
+            assert chunk.embedding is not None
+            assert len(chunk.embedding) == 768
+        else:
+            assert chunk.embedding is None
+
+
+@pytest.mark.asyncio
 async def test_upload_rejects_oversized_file(client: AsyncClient) -> None:
     token = await _register_and_login(client, org_name="Acme", email="admin3@example.com")
 

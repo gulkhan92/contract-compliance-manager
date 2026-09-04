@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     # --- Document storage (wired up in Phase 3) ---
     storage_root: str = "storage"
 
+    # --- Local embeddings (wired up in Phase 4) ---
+    # bge-base-en-v1.5 produces 768-dim vectors, matching the
+    # contract_chunks.embedding / clause_precedent_cache.embedding column
+    # width fixed in the Phase 1 migration — changing this requires a new
+    # migration to match.
+    embedding_model_name: str = "BAAI/bge-base-en-v1.5"
+
     # --- LLM providers (wired up in Phase 5) ---
     groq_api_key: str | None = None
     gemini_api_key: str | None = None

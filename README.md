@@ -39,6 +39,14 @@ schema, security model, API surface, and phased build plan — lives in
   regex/keyword pre-filter that flags obligation-candidate paragraphs
   before anything reaches an embedding model or an LLM (Phase 4/5). Plus
   list/get/status/delete endpoints, all org-scoped and role-gated.
+- **Phase 4 — Embeddings & Local Semantic Filter**: `BAAI/bge-base-en-v1.5`
+  via `sentence-transformers`, run entirely on CPU (loaded once at process
+  startup) — every regex pre-filter survivor gets embedded and stored on
+  its `contract_chunks` row. A fixed reference-embedding set per obligation
+  category (`category_reference.py`) provides the second, still-free
+  filter stage; a pgvector cosine-similarity lookup against
+  `clause_precedent_cache` (`dedup.py`) is built and tested for Phase 5 to
+  call before every LLM extraction.
 
 See the build plan's §12 for the remaining phases.
 
@@ -97,6 +105,16 @@ the container above — override via `.env`/env var otherwise):
 The `tests/db/` suite requires the database to be migrated first (`alembic
 upgrade head`); each test runs inside a rolled-back transaction, so it never
 leaves data behind.
+
+### Embedding model (Phase 4)
+
+The first thing that calls `app.services.embeddings` (the app itself, or
+any `tests/services/test_embeddings.py` / `test_category_reference.py` /
+`test_contracts.py` test) downloads and caches `BAAI/bge-base-en-v1.5`
+(~440MB) from Hugging Face — a one-time cost per machine, ~5-10 minutes on
+a slow connection. If it fails partway on a constrained or proxied network,
+retry with `HF_HUB_DISABLE_XET=1` (also set in CI), which forces a plain
+HTTP download instead of Hugging Face's newer chunked-transfer backend.
 
 ## Frontend — local setup
 
