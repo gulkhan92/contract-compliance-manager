@@ -15,3 +15,7 @@ Thumbs.db
 
 # Uploaded contract files (local dev storage, Phase 3+)
 storage/
+
+# Internal engineering-prompt/spec document — not for public distribution.
+# See docs/ENGINEERING_WALKTHROUGH.md for the public-facing equivalent.
+docs/CONTRACT_CLM_BUILD_PLAN.md

@@ -1,0 +1,438 @@
+# Engineering Walkthrough
+
+This document walks through how ObliTrack was actually built, phase by
+phase, in the order the work happened. Each step names the concrete
+technology used for it inline — the goal is that a developer who has
+never seen this codebase can read this top to bottom and understand not
+just *what* exists, but *why* it's built the way it is and what tradeoffs
+were made along the way.
+
+If you just want to run the thing, see the root [README](../README.md).
+This document is the "how it was built and why" companion to that.
+
+---
+
+## Phase 0 — Project Scaffolding
+
+The goal of this phase was a working, tested skeleton for both halves of
+the app, containerized and wired into CI — before any real feature work,
+so every later phase lands on solid ground.
+
+### Monorepo layout
+
+The repo is a single monorepo with `backend/`, `frontend/`, `infra/`, and
+`docs/` at the top level. `backend/` and `frontend/` are each
+self-contained (their own dependency manifests, their own venv/`node_modules`),
+while `infra/` holds the `docker-compose.yml` that wires the two together
+with a database. This keeps the two halves independently runnable and
+testable while still being one Git history.
+
+### Backend skeleton — FastAPI
+
+The backend is **Python 3.13** with **FastAPI** as the web framework,
+chosen because it's async-native, generates an OpenAPI schema
+automatically, and its request/response models are **Pydantic v2**
+objects — which matters a lot later, once the app needs to validate
+structured LLM output against a schema (Phase 5).
+
+Configuration is centralized in `app/core/config.py` using
+**pydantic-settings**: a single `Settings` class reads every configuration
+value from environment variables (or a local `.env` file, never
+committed), with typed fields and sane development defaults. Every later
+phase adds its own settings to this one class rather than reading
+`os.environ` ad hoc — one source of truth for configuration, and it's
+what makes `.env.example` a complete, accurate list of every variable a
+deployment needs.
+
+The FastAPI app itself is assembled in `app/main.py` via a
+`create_app()` factory (not a bare module-level `FastAPI()` call), and
+routers are aggregated in `app/api/v1/router.py` — each feature gets its
+own router module under `app/api/v1/`, included there as it's built. The
+first endpoint was a trivial health check (`GET /api/v1/health`) — just
+enough to prove the skeleton actually serves requests and to give CI
+something to smoke-test.
+
+### Frontend skeleton — React + Vite + TypeScript
+
+The frontend is **React 18** on **Vite** with **TypeScript**, scaffolded
+via Vite's own `create-vite` template and then built out with
+**Tailwind CSS v4** (via the `@tailwindcss/vite` plugin — no separate
+PostCSS config needed) and **shadcn/ui** for component primitives
+(`npx shadcn@latest init`, which also wires up the `@/*` import alias in
+both `vite.config.ts` and `tsconfig.json`). State/data-fetching libraries
+(TanStack Query, Zustand) get added once there's an actual API to call
+against — Phase 0 just proves the build/lint/test/typecheck toolchain
+works end to end.
+
+### Containerization — Docker
+
+Both halves get a `Dockerfile`. The backend image is `python:3.13-slim`
+with a dedicated non-root user (`groupadd`/`useradd` in the image build,
+then `USER app` before the app runs) — a container running as root is an
+unnecessary privilege escalation surface if it's ever compromised, and
+it's just as easy to not do that from day one. The frontend image is a
+two-stage build: `node:20-slim` to run `npm run build`, then the static
+output served by **nginx** — specifically `nginxinc/nginx-unprivileged`,
+because the *stock* nginx image only drops its worker processes to a
+non-root user while the master process stays root to bind port 80; the
+unprivileged image runs the whole container as non-root on port 8080
+instead.
+
+`infra/docker-compose.yml` wires `postgres` (the `pgvector/pgvector:pg16`
+image — Postgres with the `pgvector` extension preinstalled), `api`,
+`worker` (a placeholder until Phase 7 gives it something to run), and
+`frontend` together for local development.
+
+### CI pipeline — GitHub Actions
+
+`.github/workflows/ci.yml` runs on every push: for the backend, install
+the pinned dependencies, lint (**ruff**), type-check (**mypy**, strict
+mode), and run the test suite (**pytest**) — later phases add a real
+Postgres service container to this job once the app needs a database.
+For the frontend: install, lint (**oxlint**), type-check (`tsc --noEmit`),
+test (**vitest**), and build. A separate job does a Docker build smoke
+test for both images. Dependency vulnerability scanning
+(**pip-audit**, **npm audit**) runs on every push too, non-blocking so a
+transitive advisory with no available fix doesn't halt all work, but
+visible in the CI log.
+
+### Dependency pinning
+
+Both `requirements.txt` and `requirements-dev.txt` are **fully pinned**
+(`pip freeze` output, not loose version ranges) — generated by installing
+into a clean, throwaway virtualenv and freezing the result, so the exact
+same dependency tree installs every time, in CI and on any machine. This
+is redone every time a new dependency is added throughout the project.
+
+---
+
+## Phase 1 — Data Layer
+
+With the skeleton in place, the next step was the actual relational
+schema the whole application is built on.
+
+### ORM models — SQLAlchemy 2.0 (async)
+
+Every table is a **SQLAlchemy 2.0** model using the modern typed
+`Mapped[...]` / `mapped_column(...)` style (not the older `Column(...)`
+style), under `app/db/models/`: `organizations`, `users`, `contracts`,
+`contract_chunks`, `obligations`, `alerts`, `extraction_jobs`,
+`llm_usage_log`, `clause_precedent_cache`, `audit_log`, and (added in
+Phase 2) `refresh_tokens` — 11 tables in total. A small set of mixins in
+`app/db/base.py` (`UUIDPrimaryKeyMixin`, `CreatedAtMixin`,
+`CreatedUpdatedAtMixin`) factor out the `id`/`created_at`/`updated_at`
+columns every table needs.
+
+Two schema details worth understanding:
+
+- **`pgvector`** is used for the `embedding` columns on `contract_chunks`
+  and `clause_precedent_cache` (`Vector(768)`, via the `pgvector` Python
+  package's SQLAlchemy integration) — this is what lets Postgres do
+  similarity search directly, with no separate vector database to run.
+- **Native Postgres ENUMs** back every categorical column (`app/db/enums.py`
+  defines the Python `StrEnum` classes). A column type reused across more
+  than one table — `llm_provider_name` backs a column on both
+  `extraction_jobs` and `llm_usage_log`, `obligation_category` backs a
+  column on both `obligations` and `clause_precedent_cache` — has to be
+  the *same Python object* everywhere it's used (`app/db/pg_types.py`
+  instantiates each enum type once and every model imports from there).
+  Two separately-constructed `Enum(...)` objects that happen to share a
+  `name=` will make SQLAlchemy try to `CREATE TYPE` the same Postgres
+  enum twice and crash — this was discovered and fixed by testing the
+  actual migration against a real database, not just trusting that it
+  looked right.
+
+### Migrations — Alembic
+
+Schema changes are managed entirely through **Alembic** migrations
+(`backend/alembic/`), never hand-written SQL run against a live database.
+`alembic/env.py` is wired to read `DATABASE_URL` from the app's own
+`Settings` (one source of truth, not a second copy of the connection
+string in `alembic.ini`) and uses Alembic's async template so migrations
+run through the same async SQLAlchemy engine the app uses.
+
+The initial migration does three things worth calling out: it runs
+`CREATE EXTENSION IF NOT EXISTS vector` before creating any table with a
+vector column (the extension has to exist first); it creates **HNSW**
+indexes (`postgresql_using="hnsw"`, `vector_cosine_ops`) on both
+embedding columns for fast cosine-similarity search; and — because of the
+shared-enum issue above — it explicitly creates and drops each Postgres
+ENUM type itself (`create_type=False` on every column, with an explicit
+`.create()`/`.drop()` call), rather than relying on Alembic's default
+per-column behavior, which turned out to be unreliable for a type used on
+more than one table. This was verified by actually running
+`upgrade → downgrade → upgrade` against a live `pgvector/pgvector:pg16`
+container multiple times, and by `alembic check`, which confirms the
+migrations and the SQLAlchemy models describe the exact same schema (this
+runs in CI on every push).
+
+### Demo data — CUAD dataset
+
+`backend/scripts/seed_demo_data.py` builds a realistic, multi-status
+obligation calendar from the real
+[CUAD v1 dataset](https://www.atticusprojectai.org/cuad) (510 real
+contracts with expert clause annotations) — used only as a source of
+realistic sample text, never for model fine-tuning. CUAD's annotated
+clause categories are mapped onto ObliTrack's own obligation taxonomy
+(`Renewal Term` → `RENEWAL`, `Termination For Convenience` →
+`TERMINATION_NOTICE`, and so on), and dates/statuses are synthesized
+relative to today so the calendar looks like a live, in-progress book of
+business rather than a set of already-expired historical contracts. The
+script refuses to run without an explicit `--demo` flag and refuses
+outright against `ENVIRONMENT=production` — a seed script is exactly the
+kind of thing that must never accidentally run against a real database.
+
+---
+
+## Phase 2 — Authentication & Authorization
+
+### Password hashing — bcrypt
+
+Passwords are hashed with the **`bcrypt`** library directly. The build
+plan originally called for `passlib[bcrypt]`, but `passlib` hasn't been
+released since 2020 and is incompatible with modern `bcrypt` releases (it
+reads a `bcrypt.__about__.__version__` attribute that no longer exists,
+so hashing raises at runtime) — using the actively-maintained library
+directly avoided shipping a broken dependency combination. This lives in
+`app/core/security.py` as two small functions, `hash_password` and
+`verify_password`.
+
+### JWT tokens — PyJWT
+
+Access and refresh tokens are signed **JWTs**, issued and verified via
+**PyJWT**. Here too the build plan named a different library
+(`python-jose`), swapped out for the same reason as bcrypt above:
+`python-jose` unconditionally pulls in `python-ecdsa` even when the app
+only ever uses `HS256` (an HMAC algorithm with no ECDSA involved at all),
+and that `ecdsa` version carries a real, unfixed CVE (a timing-attack
+vulnerability the upstream maintainers have declared out of scope).
+`PyJWT` has zero required dependencies for `HS256` and is what current
+OWASP/FastAPI guidance recommends for exactly this reason.
+
+Each token carries the user's id, their organization id, their role, a
+token type (`access` vs `refresh` — so a refresh token can't be replayed
+as an access token), and a unique `jti`. Access tokens are short-lived
+(15 minutes by default); refresh tokens live for 7 days, ride in an
+`httpOnly`, `SameSite=strict` cookie scoped to `/api/v1/auth`, and are
+**rotated on every use**: `app/db/models/refresh_token.py` is a denylist
+table storing only a SHA-256 hash of the token (never the raw value) plus
+its expiry and revocation timestamp. Calling `/auth/refresh` issues a
+brand-new refresh token and immediately revokes the one that was
+presented — replaying an old, already-rotated refresh token is rejected,
+which is covered directly by a test.
+
+### RBAC — FastAPI dependencies
+
+`app/api/deps.py` defines `get_current_user` (decodes and validates the
+bearer token, loads the user, and — critically — cross-checks the
+token's `org_id` claim against the user's *actual, currently-stored*
+`org_id`, not just trusting the claim) and `require_role(*roles)`, a
+dependency factory used as `Depends(require_role(UserRole.ADMIN))` on any
+endpoint that needs to restrict access by role. Every endpoint that reads
+or writes data depends on one of these and scopes its database queries by
+`current_user.org_id` — never an `org_id` taken from the request body or
+query string, since that would let a malicious client simply claim to
+belong to a different organization.
+
+### Rate limiting — slowapi
+
+`/auth/register` and `/auth/login` are rate-limited per client IP via
+**slowapi** (`app/core/rate_limit.py`), a basic defense against
+credential-stuffing and brute-force attempts against the login endpoint.
+
+### Audit logging
+
+`app/services/audit.py` provides one small `write_audit_log()` helper,
+called from every state-changing endpoint (register, login, logout,
+later: every contract/obligation mutation), writing to the `audit_log`
+table: who did what, to what, and when. This isn't optional polish for a
+legal-tech product — an audit trail of who accessed or modified contract
+data is itself a compliance requirement.
+
+---
+
+## Phase 3 — Document Ingestion Pipeline
+
+This is where the product starts doing its actual job: turning an
+uploaded file into structured, reviewable text.
+
+### Upload validation
+
+`app/services/file_validation.py` checks the *actual bytes* of an
+uploaded file, not its filename or declared `Content-Type` — both of
+those are just labels a client can lie about. A PDF is detected by its
+`%PDF-` magic-byte signature; a DOCX is detected by opening the upload as
+a zip archive (which is what a `.docx` file actually is) and checking for
+a `word/document.xml` entry inside it, which distinguishes a real Word
+document from an arbitrary zip file with a `.docx` extension slapped on
+it. Uploads are capped at 20MB, enforced against the bytes actually read,
+not a client-supplied `Content-Length` header.
+
+### Storage
+
+`app/services/storage.py` writes the validated file to a local directory
+(`storage/`, outside any web-served path) under a path built entirely
+from server-generated values — `{org_id}/{contract_id}.{pdf|docx}` — with
+the user's original filename kept only as metadata in the database, never
+used to construct a filesystem path. This is what prevents path
+traversal and filename-collision attacks: nothing about the actual file
+path is ever derived from user input.
+
+### Document parsing — PyMuPDF and python-docx
+
+`app/services/document_parser.py` turns the raw file into paragraph-level
+chunks. PDFs are parsed with **PyMuPDF** (`pymupdf.open(...)`, reading
+each page's text in `"blocks"` mode — geometrically-grouped runs of
+text, which is a reasonable proxy for paragraphs in a legal document).
+DOCX files are parsed with **python-docx**, iterating
+`document.paragraphs` directly (a docx file already stores paragraph
+boundaries explicitly, unlike a PDF). Both parsers apply the same
+best-effort heading heuristic — a short, ALL-CAPS line, or a line
+matching a numbered-heading pattern like `"1. DEFINITIONS"` or `"ARTICLE
+II"`, becomes the running `section_heading` tag carried forward onto
+subsequent chunks — plus DOCX paragraphs additionally check the
+document's own `Heading 1`/`Heading 2` style if one is set.
+
+### The deterministic pre-filter
+
+`app/services/prefilter.py` is the first, zero-cost stage of what the
+build plan calls the token-minimization funnel: before any chunk is
+embedded or sent anywhere expensive, a set of regexes flags it as an
+obligation *candidate* if it contains a date, a duration ("30 days", "90
+days prior"), a currency amount, or one of a fixed list of
+obligation-relevant keywords (`renew`, `terminat`, `indemnif`,
+`confidential`, `governing law`, and so on) — and separately flags it as
+**boilerplate** (and therefore never a candidate, regardless of keyword
+matches) if its heading or text matches known boilerplate patterns:
+definitions sections, recitals, notarization blocks, signature pages
+("IN WITNESS WHEREOF", "Notary Public", a `/s/` signature line). Both
+checks run in plain Python, no LLM or network call involved.
+
+### Orchestration and the contracts API
+
+`app/services/ingestion.py` ties parsing, chunking, and pre-filtering
+together for one upload, updates the `extraction_jobs` row's status as it
+runs (including a `FAILED` path if the document turns out to be
+corrupt/unparseable — a hostile upload must not 500 the request), and
+persists every chunk. `app/api/v1/contracts.py` exposes this as
+`POST /api/v1/contracts` (upload — restricted to `admin`/`legal_ops`
+roles) alongside `GET` (list, filterable by status/type, paginated),
+`GET /{id}`, `GET /{id}/status` (poll the extraction job), and `DELETE`
+(also role-restricted). A request for a contract belonging to a
+*different* organization returns a plain `404`, not a `403` — the
+distinction matters, because a `403` confirms the resource exists (just
+not for you), while a `404` gives an attacker no information at all about
+whether another org's contract ID is even valid.
+
+This stage runs **synchronously inside the upload request**, not as a
+background task — deliberately: parsing is fast, CPU-only, local work
+with no network or LLM call involved yet, so there's nothing here that
+benefits from being offloaded to the `worker` process. That changes in
+Phase 5, where the LLM extraction call is genuinely slow, external, and
+worth queuing.
+
+---
+
+## Phase 4 — Embeddings & Local Semantic Filter
+
+### Local embeddings — sentence-transformers
+
+`app/services/embeddings.py` loads **`BAAI/bge-base-en-v1.5`** via the
+**`sentence-transformers`** library and runs it entirely on CPU — no API
+call, no per-request cost, no rate limit, which is exactly what makes the
+next two stages of the funnel free. The model is loaded exactly once per
+process via `functools.lru_cache`, and a FastAPI **lifespan** hook in
+`app/main.py` pre-warms it at application startup in real deployments (so
+the first real upload isn't the one that pays the model-load cost);
+`lru_cache` is what actually guarantees "once," since tests construct the
+app without triggering ASGI lifespan events and rely on the cache instead.
+Every embedding is L2-normalized (`normalize_embeddings=True`) because
+BGE models are trained and evaluated for cosine similarity specifically
+under that normalization.
+
+One practical note worth recording: `huggingface_hub`'s newer chunked
+"xet" transfer protocol proved unreliable for the one-time ~440MB model
+download in this environment (repeated connection resets mid-transfer),
+while the plain HTTP fallback succeeded consistently. `HF_HUB_DISABLE_XET=1`
+is set before `sentence_transformers` is even imported — a reliability
+trade worth making generally, not just a workaround for one environment.
+
+### Category reference matching
+
+`app/services/category_reference.py` defines a small, fixed set of
+hand-written exemplar sentences per obligation category (a renewal
+clause, a termination-notice clause, an indemnification clause, and so
+on — written in the spirit of the categories CUAD itself defines, not
+copied from CUAD's own licensed annotation text), embeds them once, and
+compares any new chunk's embedding against every category's exemplars via
+plain cosine similarity (`app/services/similarity.py`). This is the
+second free filter stage: a chunk that passed the regex pre-filter but
+doesn't actually resemble *any* known obligation category semantically is
+a good candidate to *not* spend an LLM call on.
+
+### Clause-level deduplication
+
+`app/services/dedup.py` looks up `clause_precedent_cache` for a
+near-duplicate of a given embedding, **scoped to the organization**,
+using pgvector's own `cosine_distance` operator directly in the SQL query
+(not a Python loop — this needs to run as an efficient query over
+potentially many stored rows, which is exactly what the HNSW index from
+Phase 1 exists for). Many contracts reuse boilerplate templates
+org-wide; if a near-duplicate paragraph was already extracted before, the
+cached structured result gets reused instead of calling the LLM again.
+Nothing calls this against a live upload yet — the cache it reads is
+populated by Phase 5's LLM extraction, which doesn't exist yet — but it's
+built and tested now (against synthetic cache rows) so that Phase 5's
+extraction call is a "check here first" addition, not new infrastructure
+built under time pressure later.
+
+### Wiring it into ingestion
+
+`app/services/ingestion.py` was extended so every chunk that survives the
+regex pre-filter gets embedded (via `starlette.concurrency.run_in_threadpool`,
+since `model.encode(...)` is a blocking, CPU-bound call and must not block
+the async event loop) and its embedding stored on the `contract_chunks`
+row; boilerplate/no-signal chunks are never embedded at all, since
+there's no point spending even free compute on text nothing downstream
+will use. The pipeline also logs how many pre-filter survivors also pass
+the semantic-similarity check — a preview of how much further Phase 5's
+LLM batch will shrink once it exists.
+
+---
+
+## Testing Strategy
+
+Every phase's tests run against a **real** Postgres+pgvector instance —
+never a mocked database — both locally and in CI (a `postgres` service
+container in the GitHub Actions job). The core testing pattern, set up in
+`tests/conftest.py`, is a transactional-rollback fixture: each test runs
+inside an outer database transaction that's rolled back afterward
+(`join_transaction_mode="create_savepoint"`), so a test's own calls to
+`session.commit()` — including commits made *inside* the FastAPI endpoint
+code under test, via a `get_db` dependency override — become savepoints
+nested inside that outer transaction rather than permanent writes. This
+means the full test suite can run repeatedly with zero leftover data,
+without any manual cleanup step, and API-level tests exercise the real
+endpoint code path (real request → real dependency injection → real
+database) rather than a simplified mock of it.
+
+`pytest-asyncio` is configured with a **session-scoped event loop**
+(`asyncio_default_fixture_loop_scope = "session"`) — a detail that matters
+because the app's async SQLAlchemy engine is a module-level singleton
+whose `asyncpg` connections are bound to whichever event loop created
+them; pytest-asyncio's default per-function loop would tear that loop
+down between tests while the engine still held connections open on it.
+
+---
+
+## Roadmap
+
+The build plan's remaining phases, in order: LLM-based structured
+extraction (Groq primary, Gemini fallback, schema-validated against a
+Pydantic model, with quota-aware provider selection), the
+obligation/review CRUD API and audit-logged review workflow, the
+APScheduler-driven daily alert scan and email notifications, the React
+frontend's core views (dashboard, contract detail with source-paragraph
+traceability, review queue, compliance calendar), the precedent-search
+feature built on the embedding infrastructure already in place, and a
+final hardening/accessibility/documentation pass before demo readiness.
