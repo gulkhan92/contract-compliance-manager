@@ -17,6 +17,22 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: oblitrack
+          POSTGRES_PASSWORD: oblitrack
+          POSTGRES_DB: oblitrack
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U oblitrack"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://oblitrack:oblitrack@localhost:5432/oblitrack
     steps:
       - uses: actions/checkout@v4
 
@@ -35,7 +51,13 @@ jobs:
         run: ruff check .
 
       - name: Type-check (mypy)
-        run: mypy app
+        run: mypy app scripts
+
+      - name: Apply database migrations
+        run: alembic upgrade head
+
+      - name: Verify no schema drift (models vs. migrations)
+        run: alembic check
 
       - name: Test (pytest)
         run: pytest -q
