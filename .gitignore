@@ -1,0 +1,17 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Large reference datasets (see data/README.md for how to fetch)
+data/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Uploaded contract files (local dev storage, Phase 3+)
+storage/

@@ -1,0 +1,64 @@
+name: oblitrack
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-oblitrack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-oblitrack}
+      POSTGRES_DB: ${POSTGRES_DB:-oblitrack}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oblitrack}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-oblitrack}:${POSTGRES_PASSWORD:-oblitrack}@postgres:5432/${POSTGRES_DB:-oblitrack}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # NOTE: app.worker (the APScheduler daily alert-scan process) is implemented
+  # in Phase 7 of docs/CONTRACT_CLM_BUILD_PLAN.md. This service is wired now
+  # so the compose topology matches the target architecture from day one.
+  worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-oblitrack}:${POSTGRES_PASSWORD:-oblitrack}@postgres:5432/${POSTGRES_DB:-oblitrack}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5173:8080"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
