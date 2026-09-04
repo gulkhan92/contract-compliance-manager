@@ -90,29 +90,110 @@ renewal-workflow views — see the roadmap in the engineering walkthrough.
 
 ```mermaid
 flowchart TB
-    User(["Legal Ops / Procurement User"]) -->|"upload contract, review obligations"| FE["React + TypeScript SPA"]
-    FE -->|"REST, JWT bearer auth"| API
-
-    subgraph API["FastAPI Backend"]
-        AuthN["Auth and RBAC - JWT + bcrypt + rate limiting"]
-        Ingestion["Document Ingestion - PyMuPDF / python-docx"]
-        PreFilter["Deterministic Pre-filter - regex: dates, durations, keywords"]
-        Embedding["Local Embeddings - sentence-transformers, CPU-only"]
-        Extraction["LLM Extraction (Phase 5) - Groq primary / Gemini fallback"]
+    %% ==========================================
+    %% CLIENT & PRESENTATION LAYER
+    %% ==========================================
+    subgraph CLIENT["<b>Client & Presentation Layer</b>"]
+        User(["<b>Legal Ops & Procurement Teams</b><br/>Contract Lifecycle & Risk Stakeholders"])
+        FE["<b>React 19 + TypeScript SPA</b><br/>Vite • Tailwind CSS • shadcn/ui<br/><i>Dashboard • Review Queue • Calendar</i>"]
     end
 
-    Ingestion --> PreFilter
-    PreFilter --> Embedding
-    Embedding -.->|"next phase"| Extraction
+    %% ==========================================
+    %% API GATEWAY & SECURITY PERIMETER
+    %% ==========================================
+    subgraph GATEWAY["<b>API Gateway & Security Perimeter (FastAPI)</b>"]
+        API["<b>FastAPI Core Application</b><br/>Async ASGI • Pydantic v2 • OpenAPI"]
+        AUTH["<b>Security & Governance Engine</b><br/>• PyJWT Bearer Auth + Rotating Refresh Denylist<br/>• Multi-Tenant Org RBAC (Admin / LegalOps / Viewer)<br/>• SlowAPI Rate Limiting & Immutable Audit Trail"]
+    end
 
-    API --> DB[("PostgreSQL 16 + pgvector")]
-    API --> FS[["Local File Storage - UUID-keyed, outside web root"]]
+    %% ==========================================
+    %% ZERO-COST TOKEN-MINIMIZATION FUNNEL
+    %% ==========================================
+    subgraph FUNNEL["<b>Zero-Cost Token-Minimization Ingestion Funnel</b>"]
+        direction TB
+        INGEST["<b>1. Validation & Intake</b><br/>Magic-byte verify (%PDF- / DOCX zip)<br/>SHA-256 hash dedup • 20MB limit"]
+        PARSER["<b>2. Structural Parser & Chunking</b><br/>PyMuPDF (PDF blocks) & python-docx<br/>Section heading tagging & chunking"]
+        PREFILTER["<b>3. Deterministic Pre-Filter</b><br/>Regex dates, durations, currency, keywords<br/>Discard definitions, recitals, notary"]
+        EMBED["<b>4. Local Semantic Filter (CPU)</b><br/>BAAI/bge-base-en-v1.5 sentence-transformers<br/>Cosine similarity vs. CUAD anchor exemplars"]
+        DEDUP["<b>5. Org Precedent Cache & Dedup</b><br/>pgvector HNSW cosine distance search<br/>Reuse structured results on template match"]
+    end
 
-    Worker["Background Worker - APScheduler (Phase 7)"] --> DB
-    Worker -.->|"daily alert scan"| Email[["Email Alerts via SMTP"]]
+    %% ==========================================
+    %% BATCHED STRUCTURED LLM EXTRACTION ENGINE
+    %% ==========================================
+    subgraph LLM_TIER["<b>Batched Structured Extraction Engine</b>"]
+        ROUTER{"<b>Quota-Aware Provider Router</b><br/>Inspects live quota in llm_usage_log<br/>Primary vs. fallback auto-failover"}
+        GROQ["<b>Primary: Groq Cloud API</b><br/>openai/gpt-oss-20b (>750 tok/s)<br/>Single batched prompt per contract"]
+        GEMINI["<b>Fallback: Google Gemini API</b><br/>gemini-2.5-flash / flash-lite<br/>Automatic 429 quota failover & summary"]
+        SCHEMA["<b>Pydantic v2 Schema Enforcer</b><br/>Strict JSON-mode extraction<br/>12 CUAD-derived obligation categories"]
+    end
 
-    DB --> Calendar["Compliance Calendar (Phase 6+)"]
-    Calendar -.-> User
+    %% ==========================================
+    %% PERSISTENCE & STORAGE LAYER
+    %% ==========================================
+    subgraph DATA_TIER["<b>Persistence & Vector Storage</b>"]
+        DB[("<b>PostgreSQL 16 + pgvector</b><br/>11 Alembic tables • HNSW cosine index<br/>Strict org_id foreign key tenant isolation")]
+        STORAGE[["<b>Local Encrypted File Vault</b><br/>UUID-keyed storage outside web root<br/>storage/{org_id}/{contract_id}.ext"]]
+    end
+
+    %% ==========================================
+    %% COMPLIANCE OPERATIONS & AUTOMATION
+    %% ==========================================
+    subgraph OPS_TIER["<b>Compliance Operations & Automated Alerting</b>"]
+        REVIEW["<b>Human-in-the-Loop Review Queue</b><br/>Confidence score & source paragraph trace<br/>Counsel verification, edits & approvals"]
+        CALENDAR["<b>Live Compliance Calendar</b><br/>Proactive renewal & renegotiation timeline"]
+        WORKER["<b>Background Automation Worker</b><br/>APScheduler AsyncIOScheduler"]
+        ALERT["<b>Proactive Alert Engine</b><br/>Multi-lead alerts: 90 / 60 / 30 / 7 days<br/>Upcoming • At-Risk • Overdue"]
+        EMAIL[["<b>SMTP Transactional Email</b><br/>aiosmtplib automated delivery"]]
+    end
+
+    %% ==========================================
+    %% WORKFLOW RELATIONSHIPS & EDGES
+    %% ==========================================
+    User -->|"Upload PDF/DOCX & manage deadlines"| FE
+    FE <==>|"REST API calls (JWT Bearer Auth)"| API
+    API <-->|"Authenticate & enforce RBAC"| AUTH
+    API -->|"Stream upload payload"| INGEST
+    INGEST -->|"Store validated file"| STORAGE
+    INGEST -->|"Raw document stream"| PARSER
+    PARSER -->|"Paragraph-level chunks"| PREFILTER
+    PREFILTER -->|"Candidate chunks (boilerplate dropped)"| EMBED
+    EMBED -->|"768-dim BGE vector embeddings"| DEDUP
+    DEDUP <-->|"Cosine distance query (HNSW)"| DB
+    DEDUP -->|"Cache miss: filtered candidate batch"| ROUTER
+    DEDUP -.->|"Cache hit: reuse precedent extraction"| SCHEMA
+    ROUTER -->|"Primary route (high throughput)"| GROQ
+    ROUTER -.->|"Failover route on 429 / quota limit"| GEMINI
+    GROQ -->|"Structured JSON"| SCHEMA
+    GEMINI -.->|"Structured JSON"| SCHEMA
+    SCHEMA -->|"Persist contracts & obligations"| DB
+    DB -->|"Unreviewed obligations"| REVIEW
+    REVIEW -.->|"Counsel approval & adjustments"| FE
+    DB -->|"Active milestones & dates"| CALENDAR
+    CALENDAR -.->|"Interactive timeline & filters"| FE
+    WORKER -->|"Scheduled daily scan"| DB
+    WORKER -->|"Trigger due alerts"| ALERT
+    ALERT -->|"Deliver notifications"| EMAIL
+    EMAIL -.->|"Actionable alerts"| User
+
+    %% ==========================================
+    %% CLASS DEFINITIONS & STYLING
+    %% ==========================================
+    classDef client fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#ffffff;
+    classDef gateway fill:#1e1b4b,stroke:#818cf8,stroke-width:2px,color:#ffffff;
+    classDef funnel fill:#064e3b,stroke:#34d399,stroke-width:2px,color:#ffffff;
+    classDef llm fill:#451a03,stroke:#fbbf24,stroke-width:2px,color:#ffffff;
+    classDef storage fill:#083344,stroke:#22d3ee,stroke-width:2px,color:#ffffff;
+    classDef ops fill:#4c0519,stroke:#fb7185,stroke-width:2px,color:#ffffff;
+    classDef review fill:#3b0764,stroke:#c084fc,stroke-width:2px,color:#ffffff;
+
+    class User,FE client;
+    class API,AUTH gateway;
+    class INGEST,PARSER,PREFILTER,EMBED,DEDUP funnel;
+    class ROUTER,GROQ,GEMINI,SCHEMA llm;
+    class DB,STORAGE storage;
+    class WORKER,ALERT,EMAIL ops;
+    class REVIEW,CALENDAR review;
 ```
 
 Every query is scoped by the authenticated user's organization at the
