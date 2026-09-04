@@ -1,4 +1,7 @@
-FROM node:20-slim AS build
+# node:20 builds fine (vite tolerates it), but vitest 5 requires Node
+# >=22.12 — pinned to 22 here to match CI and package.json's actual
+# engine requirements, not just what happens to build.
+FROM node:22-slim AS build
 
 WORKDIR /app
 

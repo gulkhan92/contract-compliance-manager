@@ -143,7 +143,8 @@ extraction step (Phase 5) is live.
 
 ### Prerequisites
 
-Python 3.13, Node 20, Docker (for Postgres+pgvector, or run it directly).
+Python 3.13, Node 22+ (vitest 5 requires it), Docker (for Postgres+pgvector,
+or run it directly).
 
 ### Backend
 
