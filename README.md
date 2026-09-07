@@ -60,7 +60,7 @@ Contract Intake → Clause/Obligation Extraction → Obligation Tracking DB
    → Compliance Calendar → Automated Alerting → Renewal/Renegotiation Workflow
 ```
 
-**Delivered so far** (Phases 0–4 of the build — see
+**Delivered so far** (Phases 0–5 of the build — see
 [Engineering Walkthrough](docs/ENGINEERING_WALKTHROUGH.md) for the full,
 step-by-step account):
 
@@ -75,16 +75,20 @@ step-by-step account):
   extension), PDF/DOCX parsing into paragraph-level chunks, and a
   deterministic pre-filter that flags obligation-bearing text before
   anything more expensive touches it.
-- **Local semantic search** — every candidate paragraph is embedded on
+- **Local semantic search & dedup** — every candidate paragraph is embedded on
   CPU via a locally-run sentence-transformer model (zero API cost, zero
-  rate limit), stored in Postgres via `pgvector`, and matched against a
-  fixed reference set per obligation category — the second free filter
-  stage in a pipeline explicitly designed to minimize what ever reaches a
-  paid LLM call.
+  rate limit), stored in Postgres via `pgvector`, matched against a
+  fixed reference set per obligation category, and cross-referenced with
+  `clause_precedent_cache` to skip repeat LLM calls.
+- **Batched structured LLM extraction** — dual-provider strategy (Groq primary,
+  Gemini fallback) with quota-aware routing via `llm_usage_log`, Pydantic v2
+  schema validation, 1-shot corrective retry, deterministic date arithmetic,
+  and human-in-the-loop review gating.
 
-**Still ahead**: the LLM-based structured extraction call itself, the
-compliance calendar UI, the automated alerting scheduler, and the
-renewal-workflow views — see the roadmap in the engineering walkthrough.
+**Still ahead**: the obligation/review CRUD API, the compliance calendar UI,
+the automated alerting scheduler, and the renewal-workflow views — see the
+roadmap in the engineering walkthrough.
+
 
 ## Architecture
 
@@ -214,7 +218,7 @@ Numbers that are true today, not projections:
 
 | | |
 |---|---|
-| **Automated tests** | 76, all passing, run against a real Postgres+pgvector instance in CI |
+| **Automated tests** | 95, all passing, run against a real Postgres+pgvector instance in CI |
 | **Type coverage** | `mypy --strict` clean across the entire backend (app, scripts, and tests) |
 | **Dependency security** | Zero known vulnerabilities (`pip-audit` + `npm audit`), including the ML dependency tree |
 | **Database schema** | 11 tables, fully migration-managed via Alembic, zero schema drift between models and migrations |
@@ -223,9 +227,9 @@ Numbers that are true today, not projections:
 
 The token-minimization design (regex pre-filter, then local semantic
 similarity, then clause-level dedup — all before any paid LLM call) is
-built and tested end-to-end through the embedding stage; its actual
-token-reduction ratio will be measured and published once the LLM
-extraction step (Phase 5) is live.
+built and tested end-to-end through Phase 5, including dual-provider failover
+(Groq primary, Gemini fallback), quota tracking, and precedent cache reuse.
+
 
 ## How to Run It
 

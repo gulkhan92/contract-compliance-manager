@@ -16,6 +16,7 @@ from app.schemas.contract import (
     ContractUploadResponse,
     ExtractionJobSummary,
 )
+from app.services.extraction import extract_contract_obligations
 from app.services.file_validation import (
     MAX_UPLOAD_SIZE_BYTES,
     FileTooLargeError,
@@ -159,6 +160,39 @@ async def get_contract_status(
             ExtractionJobSummary.model_validate(latest_job) if latest_job is not None else None
         ),
     )
+
+
+@router.post(
+    "/{contract_id}/extract",
+    response_model=ContractStatusResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def trigger_contract_extraction(
+    db: DbSession,
+    current_user: Annotated[User, Depends(require_role(*_EDITOR_ROLES))],
+    contract_id: uuid.UUID,
+) -> ContractStatusResponse:
+    contract = await _get_org_contract(db, current_user, contract_id)
+    await extract_contract_obligations(db, contract_id=contract.id)
+    await db.commit()
+    await db.refresh(contract)
+
+    result = await db.execute(
+        select(ExtractionJob)
+        .where(ExtractionJob.contract_id == contract.id)
+        .order_by(ExtractionJob.started_at.desc().nullslast())
+        .limit(1)
+    )
+    latest_job = result.scalar_one_or_none()
+
+    return ContractStatusResponse(
+        contract_id=contract.id,
+        contract_status=contract.status,
+        latest_extraction_job=(
+            ExtractionJobSummary.model_validate(latest_job) if latest_job is not None else None
+        ),
+    )
+
 
 
 @router.delete("/{contract_id}", status_code=status.HTTP_204_NO_CONTENT)

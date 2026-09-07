@@ -400,6 +400,68 @@ LLM batch will shrink once it exists.
 
 ---
 
+## Phase 5 — LLM Extraction Layer
+
+With the zero-cost filtering funnel in place (regex pre-filtering, local CPU
+sentence-transformer embeddings, and org-scoped vector precedent caching), Phase
+5 introduces the actual structured obligation extraction step.
+
+### Schema-constrained Pydantic models
+
+The LLM extraction contract is defined in `app/schemas/extraction.py`:
+- `ExtractedObligation`: encapsulates category (one of 12 CUAD-derived
+  types), description, responsible party, trigger date, notice period, monetary
+  amount, currency, recurrence, source paragraph index, and confidence score.
+- `ContractExtractionResult`: encapsulates inferred contract type,
+  counterparty name, effective date, expiration date, and the list of extracted
+  obligations.
+
+### Dual-provider strategy: Groq primary, Gemini fallback
+
+The LLM provider abstraction in `app/services/llm/` isolates provider-specific
+wire protocols behind `BaseLLMProvider`:
+- `GroqProvider`: Calls Groq's OpenAI-compatible completions API using
+  `json_object` response mode for ultra-fast, high-throughput extraction
+  (targeting `openai/gpt-oss-20b`).
+- `GeminiProvider`: Calls Google Gemini's REST API using
+  `response_mime_type="application/json"` as the secondary failover provider
+  (`gemini-2.5-flash-lite`).
+- Both providers use lightweight, async `httpx` clients directly — no bulky,
+  unpinned vendor SDKs that introduce dependency sprawl or CVE liabilities.
+
+### Quota-aware routing and failover
+
+`app/services/llm/router.py` implements `LLMRouter`:
+- Before making any LLM call, it consults `llm_usage_log` for today's requests
+  and tokens used.
+- If Groq has headroom (under daily request/token limits), it routes to Groq;
+  if Groq is exhausted, it automatically switches to Gemini.
+- If a provider returns HTTP 429 (rate limit) or encounters an API error, the
+  router seamlessly falls back to Gemini.
+- On schema validation errors, the router executes one corrective retry
+  supplying explicit schema error feedback before falling back.
+- If all quotas are exhausted, it raises `QuotaExhaustedError`, updating the
+  `extraction_jobs` row to `FAILED` with a descriptive message.
+
+### Deterministic post-processing & precedent caching
+
+`app/services/extraction.py` ties the entire extraction workflow together:
+- **Deduplication Check**: Inspects `clause_precedent_cache` using `pgvector`
+  cosine similarity for each candidate chunk. Near-duplicates (>= 0.97) reuse
+  existing structured extractions with zero LLM cost and zero tokens spent.
+- **Batched Extraction**: Remaining candidate chunks are packed into a single
+  prompt per contract, avoiding repetitive system prompts across multiple calls.
+- **Calendar Math**: `computed_alert_date` is computed deterministically in
+  Python (`trigger_date - notice_period_days`).
+- **Human-in-the-Loop Triage**: Obligations with confidence < 0.7 or high-stakes
+  categories (`RENEWAL`, `TERMINATION_NOTICE`) are flagged with
+  `is_human_reviewed = False`, setting contract status to `needs_review`.
+- **Precedent Cache Write**: Newly extracted high-confidence clauses are saved
+  to `clause_precedent_cache` with their 768-dim embeddings for subsequent
+  contracts across the organization.
+
+---
+
 ## Testing Strategy
 
 Every phase's tests run against a **real** Postgres+pgvector instance —
@@ -416,6 +478,10 @@ without any manual cleanup step, and API-level tests exercise the real
 endpoint code path (real request → real dependency injection → real
 database) rather than a simplified mock of it.
 
+For the LLM layer, tests use `httpx.MockTransport` and mock providers to
+guarantee that CI and local test runs execute reliably without calling live
+APIs or consuming rate limits.
+
 `pytest-asyncio` is configured with a **session-scoped event loop**
 (`asyncio_default_fixture_loop_scope = "session"`) — a detail that matters
 because the app's async SQLAlchemy engine is a module-level singleton
@@ -427,12 +493,11 @@ down between tests while the engine still held connections open on it.
 
 ## Roadmap
 
-The build plan's remaining phases, in order: LLM-based structured
-extraction (Groq primary, Gemini fallback, schema-validated against a
-Pydantic model, with quota-aware provider selection), the
-obligation/review CRUD API and audit-logged review workflow, the
-APScheduler-driven daily alert scan and email notifications, the React
-frontend's core views (dashboard, contract detail with source-paragraph
-traceability, review queue, compliance calendar), the precedent-search
-feature built on the embedding infrastructure already in place, and a
-final hardening/accessibility/documentation pass before demo readiness.
+The build plan's remaining phases, in order: the obligation/review CRUD API
+and audit-logged review workflow (Phase 6), the APScheduler-driven daily
+alert scan and email notifications (Phase 7), the React frontend's core
+views (dashboard, contract detail with source-paragraph traceability, review
+queue, compliance calendar — Phase 8), the precedent-search feature built on
+the embedding infrastructure already in place (Phase 9), and final
+hardening/accessibility/documentation passes before demo readiness.
+
