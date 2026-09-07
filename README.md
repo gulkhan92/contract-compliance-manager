@@ -5,7 +5,7 @@
 ## Overview
 
 Every contract a company signs comes with a set of promises baked into its
-fine print — a renewal that auto-triggers unless someone objects in time, a
+fine print, a renewal that auto-triggers unless someone objects in time, a
 termination window that closes after sixty days, a payment milestone tied
 to a date nobody put on a calendar. None of that lives anywhere a computer
 can see it. It lives in a PDF, in someone's memory, or in a spreadsheet
@@ -14,12 +14,11 @@ that's already a version behind.
 ObliTrack is a system I designed and am building to close that gap: it
 ingests a signed contract, extracts every obligation, deadline, and
 monetary milestone it contains, and turns that into a live, queryable
-compliance calendar with proactive alerts — so a missed renewal window
+compliance calendar with proactive alerts, so a missed renewal window
 becomes something that gets caught weeks in advance, not something legal
 finds out about after the fact.
 
-This repository is the engineering build of that system, developed in
-phases, each one shipped as a working, tested increment.
+This repository contains the engineering build of the system, developed incrementally in well-defined phases. Each phase represents a functional, tested increment, allowing the system to evolve progressively while maintaining stability, consistency, and a clear foundation for subsequent development.
 
 ## The Problem
 
