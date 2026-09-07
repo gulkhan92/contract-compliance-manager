@@ -1,0 +1,195 @@
+# Self-hosted Langfuse (docs/CHATBOT_INTEGRATION_PLAN.md §8) — an OPT-IN
+# overlay, not part of the default stack: Langfuse's own self-hosted
+# architecture genuinely requires Postgres + ClickHouse + Redis + an
+# S3-compatible object store (MinIO here) on top of its web/worker
+# services, adapted from the official quickstart at
+# https://github.com/langfuse/langfuse/blob/main/docker-compose.yml
+# (trimmed of enterprise/AI-agent features this project doesn't use).
+# That's six containers and ~4 vCPU / 8-16 GB RAM to start — real
+# resource cost, which is why it's a separate file a resource-constrained
+# machine can simply not run, rather than folded into docker-compose.yml.
+#
+# Deliberately its OWN Postgres/Redis/ClickHouse rather than reusing the
+# oblitrack stack's Postgres: it keeps this file a drop-in copy of a
+# known-correct upstream config instead of a bespoke, harder-to-verify
+# adaptation, at the cost of one extra Postgres container.
+#
+# Start it alongside the main stack (from infra/):
+#   docker compose -f docker-compose.yml -f docker-compose.langfuse.yml up -d
+#
+# The bracketed defaults below are fine for a local-only instance never
+# exposed beyond your own machine. To use your own secrets instead (e.g.
+# ones set in the repo-root .env), pass --env-file:
+#   docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.langfuse.yml up -d
+# (compose's own ${VAR} substitution reads .env relative to the current
+# directory, not the compose file's location — unlike this project's
+# services, which get real secrets via the api/worker services'
+# `env_file: - ../.env` directive in docker-compose.yml).
+#
+# Then point the backend at it: set LANGFUSE_HOST=http://localhost:3000
+# and the LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY that LANGFUSE_INIT_*
+# below provisions automatically on first boot (see the worker/api log
+# output, or the Langfuse UI's Settings > API Keys) in your .env, then
+# restart the backend. Chat tracing is otherwise a complete no-op — see
+# app/services/observability.py.
+
+services:
+  langfuse-worker:
+    image: docker.langfuse.com/langfuse/langfuse-worker:4
+    restart: unless-stopped
+    depends_on: &langfuse-depends-on
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+    environment: &langfuse-worker-env
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3000}
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_POSTGRES_PASSWORD:-langfuse}@langfuse-postgres:5432/langfuse
+      SALT: ${LANGFUSE_SALT:-local-dev-salt-change-me}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      TELEMETRY_ENABLED: "false"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-local-dev-clickhouse-change-me}
+      # Explicitly false, not just omitted: unset, Langfuse's own migration
+      # step still issued `CREATE TABLE ... ON CLUSTER default` against a
+      # ReplicatedMergeTree engine, which requires a Zookeeper/ClickHouse
+      # Keeper cluster this single-node setup doesn't have — crash-looped
+      # langfuse-web with "no Zookeeper configuration" until this was set.
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_ROOT_PASSWORD:-local-dev-minio-change-me}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_ROOT_PASSWORD:-local-dev-minio-change-me}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: 6379
+      REDIS_AUTH: ${LANGFUSE_REDIS_AUTH:-local-dev-redis-change-me}
+
+  langfuse-web:
+    image: docker.langfuse.com/langfuse/langfuse:4
+    restart: unless-stopped
+    depends_on: *langfuse-depends-on
+    ports:
+      - "3000:3000"
+    environment:
+      <<: *langfuse-worker-env
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-local-dev-nextauth-secret-change-me}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9090
+      LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://langfuse-minio:9000
+      # Auto-provisions one org/project/API-key-pair on first boot, so
+      # `docker compose up` alone gets you working LANGFUSE_PUBLIC_KEY /
+      # LANGFUSE_SECRET_KEY values for the backend's .env — no manual
+      # sign-up-in-the-UI step for a local instance only you can reach.
+      LANGFUSE_INIT_ORG_ID: oblitrack
+      LANGFUSE_INIT_ORG_NAME: ObliTrack
+      LANGFUSE_INIT_PROJECT_ID: oblitrack-chat
+      LANGFUSE_INIT_PROJECT_NAME: ObliTrack Chat
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-oblitrack-local}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-oblitrack-local-change-me}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@oblitrack.local}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-ObliTrack Admin}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-local-dev-password-change-me}
+
+  langfuse-clickhouse:
+    image: docker.io/clickhouse/clickhouse-server:25.12
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-local-dev-clickhouse-change-me}
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
+
+  langfuse-minio:
+    image: docker.io/minio/minio
+    restart: unless-stopped
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_ROOT_PASSWORD:-local-dev-minio-change-me}
+    ports:
+      - "9090:9000"
+      - "127.0.0.1:9091:9001"
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 1s
+      timeout: 5s
+      retries: 5
+      start_period: 1s
+
+  langfuse-redis:
+    image: docker.io/redis:7
+    restart: unless-stopped
+    command: >
+      --requirepass ${LANGFUSE_REDIS_AUTH:-local-dev-redis-change-me}
+      --maxmemory-policy noeviction
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - langfuse_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+
+  langfuse-postgres:
+    image: docker.io/postgres:17
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:-langfuse}
+      POSTGRES_DB: langfuse
+      TZ: UTC
+      PGTZ: UTC
+    # Not published to the host at all — nothing outside this compose
+    # network needs to reach it directly, and 5432 is already taken by
+    # the oblitrack stack's own postgres service.
+    volumes:
+      - langfuse_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  langfuse_postgres_data:
+    driver: local
+  langfuse_clickhouse_data:
+    driver: local
+  langfuse_clickhouse_logs:
+    driver: local
+  langfuse_minio_data:
+    driver: local
+  langfuse_redis_data:
+    driver: local
