@@ -29,6 +29,18 @@ class ObligationSummary(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ObligationCreate(BaseModel):
+    """Schema for creating a new obligation via the API."""
+    contract_id: uuid.UUID
+    category: ObligationCategory
+    description: str = Field(min_length=1, max_length=2000)
+    responsible_party: str | None = Field(default=None, min_length=1, max_length=500)
+    trigger_date: date | None = None
+    notice_period_days: int | None = Field(default=None, ge=0)
+    monetary_amount: float | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    recurrence: RecurrenceType | None = None
+    assigned_to: uuid.UUID | None = None
 class ObligationDetail(ObligationSummary):
     source_chunk_id: uuid.UUID | None
     raw_source_text: str | None

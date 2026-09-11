@@ -7,10 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import CurrentUser, DbSession, require_role
-from app.db.enums import ObligationCategory, ObligationStatus, UserRole
+from app.db.enums import ObligationCategory, ObligationStatus, UserRole, RecurrenceType
 from app.db.models import Contract, Obligation, User
 from app.schemas.obligation import (
     CalendarEntry,
+    ObligationCreate,
     ObligationDetail,
     ObligationSummary,
     ObligationUpdate,
@@ -203,3 +204,73 @@ async def update_obligation(
     # `contract` relationship isn't expired back into a lazy load.
     await db.refresh(obligation, attribute_names=["updated_at"])
     return _to_detail(obligation)
+
+
+
+# ---------- New Endpoints ----------
+
+@router.post("/", response_model=ObligationDetail, status_code=status.HTTP_201_CREATED)
+async def create_obligation(
+    db: DbSession,
+    current_user: Annotated[User, Depends(require_role(*_EDITOR_ROLES))],
+    body: ObligationCreate,
+) -> ObligationDetail:
+    # Verify contract belongs to user's organization
+    contract = await db.get(Contract, body.contract_id)
+    if contract is None or contract.org_id != current_user.org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contract not found.")
+
+    obligation = Obligation(
+        contract_id=body.contract_id,
+        category=body.category,
+        description=body.description,
+        responsible_party=body.responsible_party,
+        trigger_date=body.trigger_date,
+        notice_period_days=body.notice_period_days,
+        monetary_amount=body.monetary_amount,
+        currency=body.currency,
+        recurrence=body.recurrence or RecurrenceType.NONE,
+        assigned_to=body.assigned_to,
+    )
+    # Compute derived fields
+    obligation.computed_alert_date = compute_alert_date(
+        obligation.trigger_date, obligation.notice_period_days
+    )
+    obligation.status = initial_obligation_status(
+        obligation.trigger_date, obligation.computed_alert_date
+    )
+    db.add(obligation)
+    await db.flush()
+    await write_audit_log(
+        db,
+        org_id=current_user.org_id,
+        user_id=current_user.id,
+        action="obligation.create",
+        entity_type="obligation",
+        entity_id=obligation.id,
+        metadata=body.model_dump(exclude_unset=True, mode="json"),
+    )
+    await db.commit()
+    await db.refresh(obligation)
+    return _to_detail(obligation)
+
+
+@router.delete("/{obligation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_obligation(
+    db: DbSession,
+    current_user: Annotated[User, Depends(require_role(*_EDITOR_ROLES))],
+    obligation_id: uuid.UUID,
+) -> None:
+    obligation = await _get_org_obligation(db, current_user, obligation_id)
+    await db.delete(obligation)
+    await write_audit_log(
+        db,
+        org_id=current_user.org_id,
+        user_id=current_user.id,
+        action="obligation.delete",
+        entity_type="obligation",
+        entity_id=obligation_id,
+        metadata=None,
+    )
+    await db.commit()
+
