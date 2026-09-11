@@ -84,9 +84,11 @@ step-by-step account):
   schema validation, 1-shot corrective retry, deterministic date arithmetic,
   and human-in-the-loop review gating.
 
-**Still ahead**: the obligation/review CRUD API, the compliance calendar UI,
-the automated alerting scheduler, and the renewal-workflow views — see the
-roadmap in the engineering walkthrough.
+## Phase 6 – Obligation & Review APIs
+
+- Added full CRUD endpoints for obligations (create, update, delete, list) with audit logging and contract‑scoped validation.
+
+**Next steps**: the compliance calendar UI, the automated alerting scheduler, and the renewal‑workflow views — see the roadmap in the engineering walkthrough.
 
 
 ## Architecture
