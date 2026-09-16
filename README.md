@@ -1,4 +1,4 @@
-# ObliTrack
+# Contract Lifecycle Management Platform
 
 **Contract Lifecycle & Obligation Management for legal and procurement teams.**
 
@@ -11,8 +11,7 @@ to a date nobody put on a calendar. None of that lives anywhere a computer
 can see it. It lives in a PDF, in someone's memory, or in a spreadsheet
 that's already a version behind.
 
-ObliTrack is a system I designed and am building to close that gap: it
-ingests a signed contract, extracts every obligation, deadline, and
+Contract Lifecycle & Obligation Management platform is a system I designed and am building to close that gap: it ingests a signed contract, extracts every obligation, deadline, and
 monetary milestone it contains, and turns that into a live, queryable
 compliance calendar with proactive alerts, so a missed renewal window
 becomes something that gets caught weeks in advance, not something legal
@@ -50,7 +49,7 @@ carefully enough to be trusted with legally binding dates.
 
 ## What I Built
 
-ObliTrack mirrors the real CLM (Contract Lifecycle Management) workflow
+Contract Lifecycle & Obligation Management Platform mirrors the real CLM (Contract Lifecycle Management) workflow
 used by enterprise tools like Ironclad and ContractPodAi — not a single
 clause-classification demo, but the full pipeline:
 
