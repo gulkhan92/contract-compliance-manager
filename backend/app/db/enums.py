@@ -84,3 +84,35 @@ class ExtractionJobStatus(StrEnum):
 class LLMProviderName(StrEnum):
     GROQ = "groq"
     GEMINI = "gemini"
+
+
+class ChatSessionScope(StrEnum):
+    ORGANIZATION = "organization"
+    CONTRACT = "contract"
+
+
+class ChatRole(StrEnum):
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+
+class ChatConfidence(StrEnum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+    INSUFFICIENT_INFORMATION = "insufficient_information"
+
+
+class ChatIntent(StrEnum):
+    DOMAIN_QUESTION = "domain_question"
+    CLAUSE_BENCHMARK = "clause_benchmark"
+    CALENDAR_QUERY = "calendar_query"
+    OUT_OF_SCOPE = "out_of_scope"
+
+
+class ChatFeedback(StrEnum):
+    NONE = "none"
+    UP = "up"
+    DOWN = "down"
+

@@ -52,13 +52,29 @@ class Settings(BaseSettings):
     # --- LLM providers (wired up in Phase 5) ---
     groq_api_key: str | None = None
     gemini_api_key: str | None = None
+    groq_daily_request_limit: int = 1000
+    groq_daily_token_limit: int = 200_000
+    gemini_daily_request_limit: int = 1500
+    gemini_daily_token_limit: int = 1_000_000
 
-    # --- SMTP (wired up in Phase 7) ---
+    # --- SMTP & Alerts (wired up in Phase 7) ---
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None
     smtp_password: str | None = None
     smtp_from_address: str | None = None
+    alert_scan_hour_utc: int = 6
+    alert_scan_minute_utc: int = 0
+    extraction_retry_interval_minutes: int = 60
+
+    # --- Chatbot & Observability ---
+    chat_rate_limit: str = "20/minute"
+    chat_max_context_chunks: int = 5
+    chat_min_relevance_threshold: float = 0.5
+    chat_max_history_messages: int = 10
+    langfuse_host: str | None = None
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
 
     @model_validator(mode="after")
     def _forbid_insecure_defaults_in_production(self) -> "Settings":

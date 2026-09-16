@@ -10,18 +10,21 @@ infra/docker-compose.yml — and that's where extraction_jobs.status will
 start meaning something over a non-trivial time window.
 """
 
+from dataclasses import dataclass
 import logging
 from datetime import UTC, datetime
 
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from app.db.enums import ContractStatus, ExtractionJobStatus
-from app.db.models import Contract, ContractChunk, ExtractionJob
+from app.db.models import Contract, ContractChunk, ExtractionJob, Obligation
 from app.services.category_reference import passes_semantic_filter
 from app.services.document_parser import parse_document
 from app.services.embeddings import embed_texts
 from app.services.file_validation import FileKind
+from app.services.llm.extraction import extract_contract_obligations
 from app.services.prefilter import classify_chunk
 
 logger = logging.getLogger(__name__)
@@ -95,3 +98,37 @@ async def ingest_contract_document(
     extraction_job.status = ExtractionJobStatus.SUCCEEDED
     extraction_job.finished_at = datetime.now(UTC)
     await db.flush()
+
+
+@dataclass
+class ExtractionRetryResult:
+    jobs_retried: int = 0
+    jobs_succeeded: int = 0
+    jobs_still_queued: int = 0
+
+
+async def retry_queued_extractions(session: AsyncSession) -> ExtractionRetryResult:
+    result = ExtractionRetryResult()
+    jobs_query = await session.execute(
+        select(ExtractionJob).where(ExtractionJob.status == ExtractionJobStatus.QUEUED)
+    )
+    jobs = list(jobs_query.scalars().all())
+    for job in jobs:
+        result.jobs_retried += 1
+        contract = await session.get(Contract, job.contract_id)
+        if contract is None:
+            continue
+        # Discard partial obligations before reprocessing to prevent duplicates
+        await session.execute(delete(Obligation).where(Obligation.contract_id == contract.id))
+        await session.flush()
+
+        await extract_contract_obligations(session, contract=contract, extraction_job=job)
+
+        if job.status == ExtractionJobStatus.SUCCEEDED:
+            result.jobs_succeeded += 1
+        elif job.status == ExtractionJobStatus.QUEUED:
+            result.jobs_still_queued += 1
+
+    await session.flush()
+    return result
+

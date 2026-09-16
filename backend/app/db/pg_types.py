@@ -12,6 +12,11 @@ from app.db.base import pg_enum
 from app.db.enums import (
     AlertStatus,
     AlertType,
+    ChatConfidence,
+    ChatFeedback,
+    ChatIntent,
+    ChatRole,
+    ChatSessionScope,
     ContractStatus,
     ContractType,
     ExtractionJobStatus,
@@ -32,3 +37,9 @@ alert_type_enum = pg_enum(AlertType, name="alert_type")
 alert_status_enum = pg_enum(AlertStatus, name="alert_status")
 extraction_job_status_enum = pg_enum(ExtractionJobStatus, name="extraction_job_status")
 llm_provider_name_enum = pg_enum(LLMProviderName, name="llm_provider_name")
+chat_session_scope_enum = pg_enum(ChatSessionScope, name="chat_session_scope")
+chat_role_enum = pg_enum(ChatRole, name="chat_role")
+chat_confidence_enum = pg_enum(ChatConfidence, name="chat_confidence")
+chat_intent_enum = pg_enum(ChatIntent, name="chat_intent")
+chat_feedback_enum = pg_enum(ChatFeedback, name="chat_feedback")
+

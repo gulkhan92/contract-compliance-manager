@@ -11,6 +11,7 @@ from app.db.enums import ContractStatus, ContractType
 from app.db.pg_types import contract_status_enum, contract_type_enum
 
 if TYPE_CHECKING:
+    from app.db.models.chat_session import ChatSession
     from app.db.models.contract_chunk import ContractChunk
     from app.db.models.extraction_job import ExtractionJob
     from app.db.models.obligation import Obligation
@@ -66,3 +67,7 @@ class Contract(UUIDPrimaryKeyMixin, CreatedUpdatedAtMixin, Base):
     extraction_jobs: Mapped[list["ExtractionJob"]] = relationship(
         back_populates="contract", cascade="all, delete-orphan"
     )
+    chat_sessions: Mapped[list["ChatSession"]] = relationship(
+        back_populates="contract", cascade="all, delete-orphan"
+    )
+

@@ -58,3 +58,18 @@ class BaseLLMProvider(ABC):
             LLMSchemaValidationError: If output is malformed / invalid schema.
             LLMProviderError: On any other provider/network error.
         """
+
+
+@dataclass(frozen=True)
+class LLMCompletionResult:
+    text: str
+    tokens_used: int
+
+
+class LLMProvider(ABC):
+    name: LLMProviderName
+
+    @abstractmethod
+    async def complete_json(self, *, system_prompt: str, user_prompt: str) -> LLMCompletionResult:
+        """Complete the prompt and return JSON output."""
+
