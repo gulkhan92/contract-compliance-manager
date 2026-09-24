@@ -58,7 +58,7 @@ Contract Intake → Clause/Obligation Extraction → Obligation Tracking DB
    → Compliance Calendar → Automated Alerting → Renewal/Renegotiation Workflow
 ```
 
-**Delivered so far** (Phases 0–5 of the build — see
+**Delivered so far** (Phases 0–6 of the build — see
 [Engineering Walkthrough](docs/ENGINEERING_WALKTHROUGH.md) for the full,
 step-by-step account):
 
@@ -82,6 +82,11 @@ step-by-step account):
   Gemini fallback) with quota-aware routing via `llm_usage_log`, Pydantic v2
   schema validation, 1-shot corrective retry, deterministic date arithmetic,
   and human-in-the-loop review gating.
+- **Obligation & Review APIs** — complete CRUD with multi-tenant org isolation,
+  role-based editing (`require_role`), human-in-the-loop triage/confirmation
+  (`obligation.confirm`, `obligation.waive`, `obligation.edit`, `obligation.delete`),
+  automatic date arithmetic (`computed_alert_date`, `status`), compliance
+  calendar aggregation (`/calendar`), and audit trail generation on every mutation.
 
 
 ### Key Architectural Principles
@@ -106,8 +111,9 @@ Numbers that are true today, not projections:
 
 The token-minimization design (regex pre-filter, then local semantic
 similarity, then clause-level dedup — all before any paid LLM call) is
-built and tested end-to-end through Phase 5, including dual-provider failover
-(Groq primary, Gemini fallback), quota tracking, and precedent cache reuse.
+built and tested end-to-end through Phase 6, including dual-provider failover
+(Groq primary, Gemini fallback), quota tracking, precedent cache reuse, and
+full obligation lifecycle management with an immutable audit log.
 
 
 ## How to Run It

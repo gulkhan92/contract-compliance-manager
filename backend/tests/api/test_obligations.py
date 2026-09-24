@@ -3,6 +3,7 @@ from datetime import date, timedelta
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token
@@ -13,7 +14,7 @@ from app.db.enums import (
     RecurrenceType,
     UserRole,
 )
-from app.db.models import Contract, Obligation, Organization, User
+from app.db.models import AuditLog, Contract, Obligation, Organization, User
 
 
 def _auth_headers(token: str) -> dict[str, str]:
@@ -325,3 +326,233 @@ async def test_calendar_excludes_far_future_and_closed_obligations(
     body = response.json()
     assert len(body) == 1
     assert body[0]["id"] == str(soon.id)
+
+
+@pytest.mark.asyncio
+async def test_create_obligation_requires_editor_role(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org, admin = await _make_org_and_admin(
+        db_session, org_name="Acme", email="create-viewer-org@example.com"
+    )
+    contract = await _make_contract(db_session, org_id=org.id, uploaded_by=admin.id)
+    viewer = User(
+        org_id=org.id,
+        email="viewer-create@example.com",
+        hashed_password="irrelevant",
+        role=UserRole.VIEWER,
+        full_name="A Viewer",
+    )
+    db_session.add(viewer)
+    await db_session.flush()
+
+    viewer_token = create_access_token(user_id=viewer.id, org_id=org.id, role=UserRole.VIEWER)
+    payload = {
+        "contract_id": str(contract.id),
+        "category": ObligationCategory.PAYMENT_MILESTONE.value,
+        "description": "Annual license fee.",
+    }
+    response = await client.post(
+        "/api/v1/obligations",
+        json=payload,
+        headers=_auth_headers(viewer_token),
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_create_obligation_success(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org, admin = await _make_org_and_admin(
+        db_session, org_name="Acme", email="create-success@example.com"
+    )
+    contract = await _make_contract(db_session, org_id=org.id, uploaded_by=admin.id)
+    trigger_date = date.today() + timedelta(days=30)
+    notice_days = 10
+
+    token = create_access_token(user_id=admin.id, org_id=org.id, role=UserRole.ADMIN)
+    payload = {
+        "contract_id": str(contract.id),
+        "category": ObligationCategory.PAYMENT_MILESTONE.value,
+        "description": "Annual software license renewal",
+        "responsible_party": "Customer",
+        "trigger_date": trigger_date.isoformat(),
+        "notice_period_days": notice_days,
+        "monetary_amount": 15000.0,
+        "currency": "USD",
+        "recurrence": RecurrenceType.ANNUALLY.value,
+        "assigned_to": str(admin.id),
+    }
+    response = await client.post(
+        "/api/v1/obligations",
+        json=payload,
+        headers=_auth_headers(token),
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["contract_id"] == str(contract.id)
+    assert body["contract_title"] == "Vendor Agreement"
+    assert body["category"] == ObligationCategory.PAYMENT_MILESTONE.value
+    assert body["description"] == "Annual software license renewal"
+    assert body["responsible_party"] == "Customer"
+    assert body["trigger_date"] == trigger_date.isoformat()
+    assert body["notice_period_days"] == notice_days
+    assert body["computed_alert_date"] == (trigger_date - timedelta(days=notice_days)).isoformat()
+    assert body["monetary_amount"] == 15000.0
+    assert body["currency"] == "USD"
+    assert body["recurrence"] == RecurrenceType.ANNUALLY.value
+    assert body["assigned_to"] == str(admin.id)
+    assert body["confidence_score"] == 1.0
+    assert body["is_human_reviewed"] is True
+    assert body["status"] == "upcoming"
+
+    created_id = uuid.UUID(body["id"])
+    audit_res = await db_session.execute(
+        select(AuditLog).where(
+            AuditLog.entity_id == created_id,
+            AuditLog.action == "obligation.create",
+        )
+    )
+    audit = audit_res.scalar_one_or_none()
+    assert audit is not None
+    assert audit.org_id == org.id
+    assert audit.user_id == admin.id
+
+
+@pytest.mark.asyncio
+async def test_create_obligation_rejects_other_org_contract(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org_a, admin_a = await _make_org_and_admin(
+        db_session, org_name="Org A", email="org-a-create@example.com"
+    )
+    org_b, admin_b = await _make_org_and_admin(
+        db_session, org_name="Org B", email="org-b-create@example.com"
+    )
+    contract_b = await _make_contract(db_session, org_id=org_b.id, uploaded_by=admin_b.id)
+
+    token_a = create_access_token(user_id=admin_a.id, org_id=org_a.id, role=UserRole.ADMIN)
+    payload = {
+        "contract_id": str(contract_b.id),
+        "category": ObligationCategory.AUDIT_RIGHTS.value,
+        "description": "Cross-org contract obligation attempt",
+    }
+    response = await client.post(
+        "/api/v1/obligations",
+        json=payload,
+        headers=_auth_headers(token_a),
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_obligation_rejects_other_org_assignee(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org_a, admin_a = await _make_org_and_admin(
+        db_session, org_name="Org A", email="org-a-assign@example.com"
+    )
+    org_b, admin_b = await _make_org_and_admin(
+        db_session, org_name="Org B", email="org-b-assign@example.com"
+    )
+    contract_a = await _make_contract(db_session, org_id=org_a.id, uploaded_by=admin_a.id)
+
+    token_a = create_access_token(user_id=admin_a.id, org_id=org_a.id, role=UserRole.ADMIN)
+    payload = {
+        "contract_id": str(contract_a.id),
+        "category": ObligationCategory.AUDIT_RIGHTS.value,
+        "description": "Cross-org assignee attempt",
+        "assigned_to": str(admin_b.id),
+    }
+    response = await client.post(
+        "/api/v1/obligations",
+        json=payload,
+        headers=_auth_headers(token_a),
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_delete_obligation_requires_editor_role(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org, admin = await _make_org_and_admin(
+        db_session, org_name="Acme", email="delete-viewer-org@example.com"
+    )
+    contract = await _make_contract(db_session, org_id=org.id, uploaded_by=admin.id)
+    obligation = await _make_obligation(db_session, contract_id=contract.id)
+
+    viewer = User(
+        org_id=org.id,
+        email="viewer-del@example.com",
+        hashed_password="irrelevant",
+        role=UserRole.VIEWER,
+        full_name="A Viewer",
+    )
+    db_session.add(viewer)
+    await db_session.flush()
+
+    viewer_token = create_access_token(user_id=viewer.id, org_id=org.id, role=UserRole.VIEWER)
+    response = await client.delete(
+        f"/api/v1/obligations/{obligation.id}",
+        headers=_auth_headers(viewer_token),
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_delete_obligation_success(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org, admin = await _make_org_and_admin(
+        db_session, org_name="Acme", email="del-success@example.com"
+    )
+    contract = await _make_contract(db_session, org_id=org.id, uploaded_by=admin.id)
+    obligation = await _make_obligation(db_session, contract_id=contract.id)
+
+    token = create_access_token(user_id=admin.id, org_id=org.id, role=UserRole.ADMIN)
+    response = await client.delete(
+        f"/api/v1/obligations/{obligation.id}",
+        headers=_auth_headers(token),
+    )
+    assert response.status_code == 204
+
+    deleted = await db_session.get(Obligation, obligation.id)
+    assert deleted is None
+
+    audit_res = await db_session.execute(
+        select(AuditLog).where(
+            AuditLog.entity_id == obligation.id,
+            AuditLog.action == "obligation.delete",
+        )
+    )
+    audit = audit_res.scalar_one_or_none()
+    assert audit is not None
+    assert audit.org_id == org.id
+    assert audit.user_id == admin.id
+
+
+@pytest.mark.asyncio
+async def test_delete_obligation_from_other_org_is_404(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    org_a, admin_a = await _make_org_and_admin(
+        db_session, org_name="Org A", email="del-a@example.com"
+    )
+    org_b, admin_b = await _make_org_and_admin(
+        db_session, org_name="Org B", email="del-b@example.com"
+    )
+    contract_b = await _make_contract(db_session, org_id=org_b.id, uploaded_by=admin_b.id)
+    obligation_b = await _make_obligation(db_session, contract_id=contract_b.id)
+
+    token_a = create_access_token(user_id=admin_a.id, org_id=org_a.id, role=UserRole.ADMIN)
+    response = await client.delete(
+        f"/api/v1/obligations/{obligation_b.id}",
+        headers=_auth_headers(token_a),
+    )
+    assert response.status_code == 404
+
+    remaining = await db_session.get(Obligation, obligation_b.id)
+    assert remaining is not None
+

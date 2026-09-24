@@ -2,8 +2,8 @@ import uuid
 from typing import TYPE_CHECKING
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Boolean, Computed, ForeignKey, Index, Integer, String, Text
+from sqlalchemy.dialects.postgresql import TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, UUIDPrimaryKeyMixin
@@ -25,6 +25,7 @@ class ContractChunk(UUIDPrimaryKeyMixin, Base):
             postgresql_with={"m": 16, "ef_construction": 64},
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
+        Index("ix_contract_chunks_search_vector_gin", "search_vector", postgresql_using="gin"),
     )
 
     contract_id: Mapped[uuid.UUID] = mapped_column(
@@ -35,6 +36,9 @@ class ContractChunk(UUIDPrimaryKeyMixin, Base):
 
     raw_text: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM))
+    search_vector: Mapped[str] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('english', raw_text)", persisted=True)
+    )
 
     is_boilerplate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     passed_prefilter: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

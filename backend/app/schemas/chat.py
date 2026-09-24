@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field
 
 from app.db.enums import ChatConfidence, ChatFeedback, ChatIntent, ChatRole, ChatSessionScope
 
-
 DeclineReason = Literal[
     # Retrieval stage — decided in pipeline.py, before generation ever runs.
     "no_candidates_found",

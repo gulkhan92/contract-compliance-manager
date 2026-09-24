@@ -462,6 +462,76 @@ wire protocols behind `BaseLLMProvider`:
 
 ---
 
+## Phase 6 — Obligation & Review APIs
+
+Following structured extraction in Phase 5, Phase 6 exposes the operational API
+surface for viewing, triaging, editing, creating, and deleting contractual
+obligations, alongside compliance calendar feeds and executive dashboard
+metrics. It establishes the bridge between raw AI extractions and trusted legal
+operations.
+
+### Multi-Tenant CRUD and Traceability
+
+The obligation endpoints in `app/api/v1/obligations.py` implement strict
+multi-tenant isolation and fine-grained role-based access control:
+
+- **Listing & Filtering (`GET /api/v1/obligations`)**: Returns paginated obligation
+  summaries strictly scoped to the authenticated caller's `org_id`. Supports query
+  filtering by `status` (`upcoming`, `at_risk`, `overdue`, `waived`), `category`,
+  and `contract_id`.
+- **Source Traceability (`GET /api/v1/obligations/{id}`)**: Returns `ObligationDetail`,
+  exposing the underlying `source_chunk_id` and `raw_source_text` from the original
+  contract paragraph alongside contract title and metadata. Requests across tenant
+  boundaries fail with HTTP 404 to avoid information disclosure or ID enumeration.
+- **Manual Creation (`POST /api/v1/obligations`)**: Enables `admin` and `legal_ops`
+  users to manually record obligations. Enforces tenant ownership of the parent
+  contract and assignee, initializes `confidence_score=1.0` and
+  `is_human_reviewed=True`, executes Python date arithmetic for `computed_alert_date`
+  and initial status, and eagerly loads contract relationships to prevent async
+  ORM lazy-load faults.
+- **Hard Deletion (`DELETE /api/v1/obligations/{id}`)**: Restricts deletion to
+  `admin` and `legal_ops` roles, ensuring org isolation and recording an audit
+  log before removing the row.
+
+### Human-in-the-Loop Review Gating (`PATCH /api/v1/obligations/{id}`)
+
+Every AI-extracted obligation enters the system with `is_human_reviewed = False` if
+it has low confidence (< 0.7) or belongs to high-consequence categories (`RENEWAL`,
+`TERMINATION_NOTICE`). The review API unifies confirmation, edits, and waivers into
+a single idempotent endpoint:
+
+- **One-Click Confirmation**: Sending an empty PATCH body confirms the extraction
+  as-is (`action="obligation.confirm"`), marking `is_human_reviewed = True`.
+- **Field Corrections**: Modifying fields like `description`, `category`,
+  `monetary_amount`, or `assigned_to` updates the record with full validation (e.g.
+  verifying assignee belongs to the caller's organization) and logs `obligation.edit`.
+- **Automatic Date Re-derivation**: Whenever `trigger_date` or `notice_period_days`
+  is updated, `computed_alert_date` is re-calculated using plain-Python date math,
+  and `status` is automatically transitioned (e.g. to `overdue` or `upcoming`), unless
+  an explicit status override was provided.
+- **Waivers**: Explicitly setting `status = "waived"` updates the obligation and logs
+  `obligation.waive` with change metadata.
+
+### Calendar and Executive Aggregations
+
+- **Compliance Calendar (`GET /api/v1/obligations/calendar`)**: Aggregates all open,
+  active obligations within a rolling window (`within_days`, default 90), automatically
+  excluding closed or waived obligations. It returns hydrated contract details suitable
+  for calendar grids and timeline views.
+- **Dashboard Snapshot (`GET /api/v1/dashboard/summary`)**: Provides real-time metrics
+  including count of at-risk obligations, overdue deadlines, upcoming items this month,
+  and active contract values segmented by currency (preventing invalid cross-currency
+  summations).
+
+### Audit Trail
+
+Every state-changing action (`obligation.create`, `obligation.edit`, `obligation.confirm`,
+`obligation.waive`, `obligation.delete`) writes an immutable `AuditLog` row capturing
+`org_id`, `user_id`, `action`, `entity_type="obligation"`, `entity_id`, and a JSONB
+payload of the exact changes applied.
+
+---
+
 ## Testing Strategy
 
 Every phase's tests run against a **real** Postgres+pgvector instance —
@@ -493,8 +563,7 @@ down between tests while the engine still held connections open on it.
 
 ## Roadmap
 
-The build plan's remaining phases, in order: the obligation/review CRUD API
-and audit-logged review workflow (Phase 6), the APScheduler-driven daily
+The build plan's remaining phases, in order: the APScheduler-driven daily
 alert scan and email notifications (Phase 7), the React frontend's core
 views (dashboard, contract detail with source-paragraph traceability, review
 queue, compliance calendar — Phase 8), the precedent-search feature built on

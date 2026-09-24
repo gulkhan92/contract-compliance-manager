@@ -10,8 +10,8 @@ infra/docker-compose.yml — and that's where extraction_jobs.status will
 start meaning something over a non-trivial time window.
 """
 
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, select

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import CurrentUser, DbSession, require_role
-from app.db.enums import ObligationCategory, ObligationStatus, UserRole, RecurrenceType
+from app.db.enums import ObligationCategory, ObligationStatus, RecurrenceType, UserRole
 from app.db.models import Contract, Obligation, User
 from app.schemas.obligation import (
     CalendarEntry,
@@ -209,7 +209,7 @@ async def update_obligation(
 
 # ---------- New Endpoints ----------
 
-@router.post("/", response_model=ObligationDetail, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ObligationDetail, status_code=status.HTTP_201_CREATED)
 async def create_obligation(
     db: DbSession,
     current_user: Annotated[User, Depends(require_role(*_EDITOR_ROLES))],
@@ -219,6 +219,14 @@ async def create_obligation(
     contract = await db.get(Contract, body.contract_id)
     if contract is None or contract.org_id != current_user.org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contract not found.")
+
+    if body.assigned_to is not None:
+        assignee = await db.get(User, body.assigned_to)
+        if assignee is None or assignee.org_id != current_user.org_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="assigned_to must be a user in your organization.",
+            )
 
     obligation = Obligation(
         contract_id=body.contract_id,
@@ -231,6 +239,8 @@ async def create_obligation(
         currency=body.currency,
         recurrence=body.recurrence or RecurrenceType.NONE,
         assigned_to=body.assigned_to,
+        confidence_score=1.0,
+        is_human_reviewed=True,
     )
     # Compute derived fields
     obligation.computed_alert_date = compute_alert_date(
@@ -251,8 +261,8 @@ async def create_obligation(
         metadata=body.model_dump(exclude_unset=True, mode="json"),
     )
     await db.commit()
-    await db.refresh(obligation)
-    return _to_detail(obligation)
+    loaded_obligation = await _get_org_obligation(db, current_user, obligation.id)
+    return _to_detail(loaded_obligation)
 
 
 @router.delete("/{obligation_id}", status_code=status.HTTP_204_NO_CONTENT)
